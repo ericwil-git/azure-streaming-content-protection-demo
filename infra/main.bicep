@@ -1,6 +1,5 @@
 // Azure Streaming Content Protection Demo
 // Main deployment template
-
 targetScope = 'subscription'
 
 @description('Primary deployment region')
@@ -16,15 +15,25 @@ param prefix string = 'scp'
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: 'rg-${prefix}-${environment}'
   location: location
+  tags: {
+    project: 'streaming-content-protection'
+    environment: environment
+  }
 }
 
-// Modules will be added here:
-// - Log Analytics + Sentinel
-// - Event Hub
-// - Storage Account (video origin)
-// - CDN / Front Door
-// - Function App (auth service)
-// - Container Instances (load generators - multi-region)
+// Deploy all resources into the resource group
+module resources 'modules/resources.bicep' = {
+  name: 'resources-deployment'
+  scope: rg
+  params: {
+    location: location
+    prefix: prefix
+    environment: environment
+  }
+}
 
 output resourceGroupName string = rg.name
-output resourceGroupId string = rg.id
+output logAnalyticsWorkspaceId string = resources.outputs.logAnalyticsWorkspaceId
+output eventHubNamespace string = resources.outputs.eventHubNamespace
+output storageAccountName string = resources.outputs.storageAccountName
+output functionAppName string = resources.outputs.functionAppName
