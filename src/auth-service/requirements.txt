@@ -1,0 +1,4 @@
+azure-functions
+pyjwt
+azure-data-tables
+azure-eventhub

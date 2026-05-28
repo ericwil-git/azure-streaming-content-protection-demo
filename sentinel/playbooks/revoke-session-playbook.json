@@ -1,0 +1,111 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Revoke-Streaming-Session"
+    },
+    "AuthServiceUrl": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Parse_Incident": {
+              "type": "ParseJson",
+              "inputs": {
+                "content": "@triggerBody()",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "properties": {
+                      "type": "object",
+                      "properties": {
+                        "title": { "type": "string" },
+                        "severity": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Extract_User_Info": {
+              "type": "Compose",
+              "inputs": {
+                "user_id": "@body('Parse_Incident')?['properties']?['relatedEntities']?[0]?['properties']?['accountName']",
+                "session_id": "@body('Parse_Incident')?['properties']?['additionalData']?['alertProductNames']"
+              },
+              "runAfter": {
+                "Parse_Incident": ["Succeeded"]
+              }
+            },
+            "Call_Revoke_API": {
+              "type": "Http",
+              "inputs": {
+                "method": "POST",
+                "uri": "[concat(parameters('AuthServiceUrl'), '/auth/revoke')]",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "user_id": "@outputs('Extract_User_Info')['user_id']",
+                  "reason": "sentinel_automated_response"
+                }
+              },
+              "runAfter": {
+                "Extract_User_Info": ["Succeeded"]
+              }
+            },
+            "Update_Incident": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "put",
+                "path": "/Incidents",
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "status": "Closed",
+                  "classification": "TruePositive",
+                  "classificationComment": "Session automatically revoked by playbook"
+                }
+              },
+              "runAfter": {
+                "Call_Revoke_API": ["Succeeded"]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

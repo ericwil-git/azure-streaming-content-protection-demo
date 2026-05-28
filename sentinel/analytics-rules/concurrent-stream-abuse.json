@@ -1,0 +1,17 @@
+{
+  "kind": "Scheduled",
+  "properties": {
+    "displayName": "Concurrent Stream Limit Exceeded",
+    "description": "Detects when a user exceeds their allowed concurrent stream limit based on subscription tier.",
+    "severity": "Medium",
+    "enabled": true,
+    "query": "StreamingEvents\n| where TimeGenerated > ago(2m)\n| where EventType == 'stream_heartbeat'\n| summarize ActiveStreams = dcount(SessionId) by UserId, MaxStreams\n| where ActiveStreams > MaxStreams\n| extend Overage = ActiveStreams - MaxStreams",
+    "queryFrequency": "PT2M",
+    "queryPeriod": "PT2M",
+    "triggerOperator": "GreaterThan",
+    "triggerThreshold": 0,
+    "tactics": [
+      "Impact"
+    ]
+  }
+}

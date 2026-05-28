@@ -1,0 +1,26 @@
+# Load Generator Configuration
+
+region: eastus  # Region this generator runs in
+
+endpoints:
+  auth: https://func-scp-demo.azurewebsites.net/api
+  cdn: https://cdn-scp-demo.azureedge.net
+
+scenarios:
+  normal:
+    enabled: true
+    users: 50
+    streams_per_user: 1
+    duration_seconds: 3600
+    
+  credential_sharing:
+    enabled: false
+    target_user: user042
+    regions:
+      - eastus
+      - westeurope
+    
+  concurrent_abuse:
+    enabled: false
+    target_user: user077
+    streams: 5
