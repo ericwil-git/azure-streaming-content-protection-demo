@@ -7,21 +7,45 @@
       "defaultValue": "Revoke-Streaming-Session"
     },
     "AuthServiceUrl": {
-      "type": "string"
+      "type": "string",
+      "defaultValue": "https://ca-auth-service.mangobush-cf26b4c9.centralus.azurecontainerapps.io"
     }
   },
+  "variables": {
+    "AzureSentinelConnectionName": "[concat('azuresentinel-', parameters('PlaybookName'))]"
+  },
   "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('AzureSentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "[variables('AzureSentinelConnectionName')]",
+        "api": {
+          "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', resourceGroup().location, 'azuresentinel')]"
+        }
+      }
+    },
     {
       "type": "Microsoft.Logic/workflows",
       "apiVersion": "2019-05-01",
       "name": "[parameters('PlaybookName')]",
       "location": "[resourceGroup().location]",
+      "tags": {
+        "purpose": "streaming-protection-demo",
+        "trigger": "sentinel-alert"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
       "properties": {
+        "state": "Enabled",
         "definition": {
           "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
           "contentVersion": "1.0.0.0",
           "triggers": {
-            "Microsoft_Sentinel_incident": {
+            "Microsoft_Sentinel_alert": {
               "type": "ApiConnectionWebhook",
               "inputs": {
                 "body": {
@@ -32,80 +56,165 @@
                     "name": "@parameters('$connections')['azuresentinel']['connectionId']"
                   }
                 },
-                "path": "/incident-creation"
+                "path": "/subscribe"
               }
             }
           },
           "actions": {
-            "Parse_Incident": {
+            "Parse_Alert_Entities": {
               "type": "ParseJson",
               "inputs": {
-                "content": "@triggerBody()",
+                "content": "@triggerBody()?['Entities']",
                 "schema": {
-                  "type": "object",
-                  "properties": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
                     "properties": {
-                      "type": "object",
-                      "properties": {
-                        "title": { "type": "string" },
-                        "severity": { "type": "string" }
-                      }
+                      "Type": {"type": "string"},
+                      "Name": {"type": "string"}
                     }
                   }
                 }
-              }
+              },
+              "runAfter": {}
             },
             "Extract_User_Info": {
               "type": "Compose",
               "inputs": {
-                "user_id": "@body('Parse_Incident')?['properties']?['relatedEntities']?[0]?['properties']?['accountName']",
-                "session_id": "@body('Parse_Incident')?['properties']?['additionalData']?['alertProductNames']"
+                "userId": "@first(body('Parse_Alert_Entities'))?['Name']",
+                "alertName": "@triggerBody()?['AlertDisplayName']",
+                "severity": "@triggerBody()?['Severity']"
               },
               "runAfter": {
-                "Parse_Incident": ["Succeeded"]
+                "Parse_Alert_Entities": ["Succeeded"]
               }
             },
-            "Call_Revoke_API": {
+            "Get_Active_Sessions": {
               "type": "Http",
               "inputs": {
-                "method": "POST",
-                "uri": "[concat(parameters('AuthServiceUrl'), '/auth/revoke')]",
+                "method": "GET",
+                "uri": "[concat(parameters('AuthServiceUrl'), '/auth/sessions/@{outputs(''Extract_User_Info'')?[''userId'']}')]",
                 "headers": {
                   "Content-Type": "application/json"
-                },
-                "body": {
-                  "user_id": "@outputs('Extract_User_Info')['user_id']",
-                  "reason": "sentinel_automated_response"
                 }
               },
               "runAfter": {
                 "Extract_User_Info": ["Succeeded"]
               }
             },
-            "Update_Incident": {
+            "Parse_Sessions": {
+              "type": "ParseJson",
+              "inputs": {
+                "content": "@body('Get_Active_Sessions')",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {"type": "string"},
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "session_id": {"type": "string"},
+                          "status": {"type": "string"},
+                          "region": {"type": "string"}
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Get_Active_Sessions": ["Succeeded"]
+              }
+            },
+            "For_Each_Active_Session": {
+              "type": "Foreach",
+              "foreach": "@body('Parse_Sessions')?['sessions']",
+              "actions": {
+                "Check_If_Active": {
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": ["@items('For_Each_Active_Session')?['status']", "active"]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Revoke_Session": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "[concat(parameters('AuthServiceUrl'), '/auth/revoke')]",
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "body": {
+                          "user_id": "@outputs('Extract_User_Info')?['userId']",
+                          "session_id": "@items('For_Each_Active_Session')?['session_id']",
+                          "reason": "sentinel_auto_revoke: @{outputs('Extract_User_Info')?['alertName']}"
+                        }
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                }
+              },
+              "runAfter": {
+                "Parse_Sessions": ["Succeeded"]
+              }
+            },
+            "Add_Comment_To_Incident": {
               "type": "ApiConnection",
               "inputs": {
+                "body": {
+                  "incidentArmId": "@triggerBody()?['WorkspaceResourceId']",
+                  "message": "<p><strong>Automated Response Executed</strong><br>User: @{outputs('Extract_User_Info')?['userId']}<br>Action: All active sessions revoked<br>Trigger: @{outputs('Extract_User_Info')?['alertName']}<br>Timestamp: @{utcNow()}</p>"
+                },
                 "host": {
                   "connection": {
                     "name": "@parameters('$connections')['azuresentinel']['connectionId']"
                   }
                 },
-                "method": "put",
-                "path": "/Incidents",
-                "body": {
-                  "incidentArmId": "@triggerBody()?['object']?['id']",
-                  "status": "Closed",
-                  "classification": "TruePositive",
-                  "classificationComment": "Session automatically revoked by playbook"
-                }
+                "method": "post",
+                "path": "/Incidents/Comment"
               },
               "runAfter": {
-                "Call_Revoke_API": ["Succeeded"]
+                "For_Each_Active_Session": ["Succeeded"]
+              }
+            }
+          },
+          "parameters": {
+            "$connections": {
+              "type": "Object",
+              "defaultValue": {}
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('AzureSentinelConnectionName'))]",
+                "connectionName": "[variables('AzureSentinelConnectionName')]",
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', resourceGroup().location, 'azuresentinel')]"
               }
             }
           }
         }
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('AzureSentinelConnectionName'))]"
+      ]
     }
-  ]
+  ],
+  "outputs": {
+    "playbookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    }
+  }
 }

@@ -1,0 +1,134 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+      },        "json": "# 
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "name": "TimeRange",
+            "type": 4,
+            "value": {
+              "durationMs": 3600000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {"durationMs": 300000, "displayText": "Last 5 minutes"},
+                {"durationMs": 900000, "displayText": "Last 15 minutes"},
+                {"durationMs": 1800000, "displayText": "Last 30 minutes"},
+                {"durationMs": 3600000, "displayText": "Last 1 hour"},
+                {"durationMs": 14400000, "displayText": "Last 4 hours"},
+                {"durationMs": 86400000, "displayText": "Last 24 hours"}
+              ]
+            }
+          }
+        ]
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "size": 4,        "query": "StreamingEvents_CL\n| where TimeGenerated {TimeRange}\n| summarize \n    TokensIssued = countif(EventType_s == 'token_issued'),\n    Validations = countif(EventType_s == 'stream_heartbeat'),\n    Denied = countif(EventType_s == 'token_denied'),\n    Revoked = countif(EventType_s == 'session_revoked')\n| project \n    ['
+        "title": "Event Summary",
+        "queryType": 0,
+        "visualization": "tiles"
+      },
+      "name": "summary-tiles"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "StreamingEvents_CL\n| where TimeGenerated {TimeRange}\n| where EventType_s in ('token_issued', 'stream_heartbeat')\n| summarize Sessions = dcount(SessionId_s) by ClientRegion_s\n| order by Sessions desc",
+        "size": 2,
+        "title": "Active Sessions by Region",
+        "queryType": 0,
+        "visualization": "map",
+        "mapSettings": {
+          "locInfo": "CountryRegion",
+          "locInfoColumn": "ClientRegion_s",
+          "sizeSettings": "Sessions",
+          "sizeAggregation": "Sum",
+          "legendMetric": "Sessions",
+          "legendAggregation": "Sum"
+        }
+      },
+      "customWidth": "50",
+      "name": "region-map"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "StreamingEvents_CL\n| where TimeGenerated {TimeRange}\n| summarize Count = count() by bin(TimeGenerated, 1m), EventType_s\n| render timechart",
+        "size": 0,
+        "title": "Event Timeline",
+        "queryType": 0,
+        "visualization": "timechart"
+      },
+      "customWidth": "50",
+      "name": "event-timeline"
+    },
+    {
+      "type": 1,
+      "content": {
+      },        "json": "## 
+      "name": "threat-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Credential Sharing Detection\nlet timeWindow = 5m;\nStreamingEvents_CL\n| where TimeGenerated {TimeRange}\n| where EventType_s in ('token_issued', 'stream_heartbeat')\n| summarize \n    Regions = make_set(ClientRegion_s),\n    IPs = make_set(ClientIP_s),\n    Sessions = dcount(SessionId_s)\n  by UserId_s, bin(TimeGenerated, timeWindow)\n| where array_length(Regions) >= 2\n| extend RegionList = strcat_array(Regions, ', ')\n| project TimeGenerated, UserId_s, RegionList, Sessions, IPs\n| order by TimeGenerated desc\n| take 20",
+        "size": 0,
+        " Credential Sharing Detected (Same User, Multiple Regions)",title": "
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "customWidth": "50",
+      "name": "credential-sharing"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Concurrent Stream Abuse\nStreamingEvents_CL\n| where TimeGenerated {TimeRange}\n| where EventType_s == 'stream_heartbeat'\n| summarize \n    ActiveSessions = dcount(SessionId_s),\n    MaxAllowed = max(toint(MaxStreams_d))\n  by UserId_s, Tier_s, bin(TimeGenerated, 2m)\n| where ActiveSessions > MaxAllowed\n| extend Excess = ActiveSessions - MaxAllowed\n| project TimeGenerated, UserId_s, Tier_s, ActiveSessions, MaxAllowed, Excess\n| order by TimeGenerated desc\n| take 20",
+        "size": 0,
+        " Concurrent Stream Limit Exceeded",title": "
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "customWidth": "50",
+      "name": "concurrent-abuse"
+    },
+    {
+      "type": 1,
+      "content": {
+      },        "json": "## 
+      "name": "user-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "StreamingEvents_CL\n| where TimeGenerated {TimeRange}\n| where EventType_s in ('token_issued', 'stream_heartbeat')\n| summarize \n    Sessions = dcount(SessionId_s),\n    Events = count(),\n    Regions = make_set(ClientRegion_s),\n    LastSeen = max(TimeGenerated)\n  by UserId_s, Tier_s\n| extend RegionCount = array_length(Regions)\n| project UserId_s, Tier_s, Sessions, Events, RegionCount, LastSeen\n| order by Events desc\n| take 25",
+        "size": 0,
+        "title": "Top Active Users",
+        "queryType": 0,
+        "visualization": "table"
+      },
+      "name": "top-users"
+    }
+  ],
+  "styleSettings": {},
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
