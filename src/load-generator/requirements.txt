@@ -1,4 +1,1 @@
-aiohttp
-asyncio
-pyyaml
-faker
+aiohttp>=3.9.0
