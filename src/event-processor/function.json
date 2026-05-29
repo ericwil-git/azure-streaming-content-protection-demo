@@ -1,0 +1,15 @@
+{
+  "scriptFile": "app.py",
+  "bindings": [
+    {
+      "type": "eventHubTrigger",
+      "name": "events",
+      "direction": "in",
+      "eventHubName": "streaming-events",
+      "connection": "EventHubConnection",
+      "cardinality": "many",
+      "consumerGroup": "$Default",
+      "dataType": "string"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify
 from azure.data.tables import TableServiceClient
 from azure.eventhub import EventHubProducerClient, EventData
 from azure.identity import DefaultAzureCredential
+from azure.monitor.ingestion import LogsIngestionClient
 
 app = Flask(__name__)
 
@@ -18,11 +19,16 @@ EVENT_HUB_NAMESPACE = os.environ.get("EVENT_HUB_NAMESPACE", "evhns-scp-demo-rmal
 EVENT_HUB_NAME = os.environ.get("EVENT_HUB_NAME", "streaming-events")
 JWT_SECRET = os.environ.get("JWT_SECRET", "demo-secret-change-in-production")
 
+# Log Analytics configuration
+DCE_ENDPOINT = os.environ.get("DCE_ENDPOINT", "https://dce-scp-demo-rmalmdf22xfvm.centralus-1.ingest.monitor.azure.com")
+DCR_IMMUTABLE_ID = os.environ.get("DCR_IMMUTABLE_ID", "")
+STREAM_NAME = os.environ.get("STREAM_NAME", "Custom-StreamingEvents_CL")
+
 # Azure clients - lazy initialization
 _credential = None
 _sessions_table = None
-_users_table = None
 _producer = None
+_logs_client = None
 
 def get_credential():
     global _credential
@@ -49,6 +55,12 @@ def get_producer():
         )
     return _producer
 
+def get_logs_client():
+    global _logs_client
+    if _logs_client is None and DCE_ENDPOINT and DCR_IMMUTABLE_ID:
+        _logs_client = LogsIngestionClient(endpoint=DCE_ENDPOINT, credential=get_credential())
+    return _logs_client
+
 # Demo users
 DEMO_USERS = {f"user{i:03d}": {"tier": "premium" if i % 5 == 0 else "basic", 
                                "max_streams": 4 if i % 5 == 0 else 2} 
@@ -58,14 +70,40 @@ DEMO_USERS["user077"] = {"tier": "basic", "max_streams": 2, "test_scenario": "co
 DEMO_USERS["pirate001"] = {"tier": "blocked", "max_streams": 0, "blacklisted": True}
 
 def send_event(event_type, data):
+    """Send event to Event Hub and optionally Log Analytics."""
+    now = datetime.now(timezone.utc)
+    event_data = {"event_type": event_type, "timestamp": now.isoformat(), **data}
+    
+    # Send to Event Hub
     try:
-        event_data = {"event_type": event_type, "timestamp": datetime.now(timezone.utc).isoformat(), **data}
         producer = get_producer()
         batch = producer.create_batch()
         batch.add(EventData(json.dumps(event_data)))
         producer.send_batch(batch)
     except Exception as e:
-        print(f"Event send failed: {e}")
+        print(f"Event Hub send failed: {e}")
+    
+    # Send to Log Analytics (if configured)
+    try:
+        logs_client = get_logs_client()
+        if logs_client and DCR_IMMUTABLE_ID:
+            log_entry = {
+                "TimeGenerated": now.isoformat(),
+                "EventType": event_type,
+                "UserId": data.get("user_id", ""),
+                "SessionId": data.get("session_id", ""),
+                "ClientIP": data.get("client_ip", ""),
+                "ClientRegion": data.get("region", ""),
+                "DeviceFingerprint": data.get("device", ""),
+                "ContentId": data.get("content_id", ""),
+                "Status": "success",
+                "MaxStreams": data.get("max_streams", 0),
+                "Tier": data.get("tier", ""),
+                "Reason": data.get("reason", ""),
+            }
+            logs_client.upload(rule_id=DCR_IMMUTABLE_ID, stream_name=STREAM_NAME, logs=[log_entry])
+    except Exception as e:
+        print(f"Log Analytics send failed: {e}")
 
 def generate_device_fingerprint(request):
     ua = request.headers.get("User-Agent", "")
@@ -111,8 +149,11 @@ def issue_token():
     except Exception as e:
         print(f"Session store failed: {e}")
     
-    send_event("token_issued", {"user_id": user_id, "session_id": session_id, 
-                                "region": region, "client_ip": client_ip})
+    send_event("token_issued", {
+        "user_id": user_id, "session_id": session_id, 
+        "region": region, "client_ip": client_ip,
+        "device": device_fp, "tier": user["tier"], "max_streams": user["max_streams"]
+    })
     
     return jsonify({"token": token, "session_id": session_id, "expires_in": 14400})
 
@@ -143,7 +184,11 @@ def validate_token():
     except Exception as e:
         print(f"Session check failed: {e}")
     
-    send_event("stream_heartbeat", {"user_id": user_id, "session_id": session_id, "content_id": content_id})
+    send_event("stream_heartbeat", {
+        "user_id": user_id, "session_id": session_id, "content_id": content_id,
+        "region": payload.get("region"), "device": payload.get("device"),
+        "tier": payload.get("tier"), "max_streams": payload.get("max_streams")
+    })
     return jsonify({"valid": True, "user_id": user_id, "session_id": session_id, "tier": payload.get("tier")})
 
 @app.route("/auth/revoke", methods=["POST"])

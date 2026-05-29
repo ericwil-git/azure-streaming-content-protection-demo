@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "defaultValue": "log-scp-demo"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspaceName'), '/Microsoft.SecurityInsights/session-revocation-tracking')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Session Revocation Activity",
+        "description": "Tracks session revocation events for audit and incident response.",
+        "severity": "Informational",
+        "enabled": true,
+        "query": "StreamingEvents_CL\n    | where TimeGenerated > ago(1h)\n    | where EventType_s == \"session_revoked\"\n    | project TimeGenerated, UserId_s, SessionId_s, Reason_s, ClientIP_s",
+        "queryFrequency": "PT15M",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "tactics": ["Impact"],
+        "incidentConfiguration": {
+          "createIncident": false
+        }
+      }
+    }
+  ]
+}

@@ -3,3 +3,4 @@ pyjwt>=2.8.0
 azure-data-tables>=12.5.0
 azure-eventhub>=5.11.0
 azure-identity>=1.15.0
+azure-monitor-ingestion>=1.0.0

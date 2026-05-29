@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "defaultValue": "log-scp-demo"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[concat(parameters('workspaceName'), '/Microsoft.SecurityInsights/concurrent-stream-abuse')]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Concurrent Stream Limit Exceeded",
+        "description": "Detects when a user attempts to stream on more devices than their subscription tier allows.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "// Detect concurrent streams exceeding user's max_streams limit\nlet timeWindow = 2m;\nStreamingEvents_CL\n    | where TimeGenerated > ago(15m)\n    | where EventType_s == \"stream_heartbeat\"\n    | summarize \n        ActiveSessions = dcount(SessionId_s),\n        Devices = make_set(DeviceFingerprint_s),\n        MaxAllowed = max(toint(MaxStreams_d))\n      by UserId_s, Tier_s, bin(TimeGenerated, timeWindow)\n    | where ActiveSessions > MaxAllowed\n    | extend ExcessStreams = ActiveSessions - MaxAllowed\n    | project TimeGenerated, UserId_s, Tier_s, ActiveSessions, MaxAllowed, ExcessStreams, Devices",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT15M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT30M",
+        "suppressionEnabled": true,
+        "tactics": ["Impact"],
+        "techniques": ["T1496"],
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {"identifier": "Name", "columnName": "UserId_s"}
+            ]
+          }
+        ],
+        "alertDetailsOverride": {
+          "alertDisplayNameFormat": "Stream Abuse: {{UserId_s}} ({{ActiveSessions}}/{{MaxAllowed}} streams)",
+          "alertDescriptionFormat": "User {{UserId_s}} ({{Tier_s}} tier) is using {{ActiveSessions}} concurrent streams, exceeding their limit of {{MaxAllowed}}. Excess: {{ExcessStreams}} streams."
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT30M",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    }
+  ]
+}
